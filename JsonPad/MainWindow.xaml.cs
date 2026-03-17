@@ -9,6 +9,7 @@ using System.Windows.Threading;
 using JsonPad.Services;
 using JsonPad.Ui;
 using Microsoft.Win32;
+using JsonValidationResult = JsonPad.Services.ValidationResult;
 
 namespace JsonPad;
 
@@ -25,7 +26,7 @@ public partial class MainWindow : Window
     private CancellationTokenSource? _operationCts;
     private CancellationTokenSource? _validationCts;
     private Task? _validationTask;
-    private ValidationResult? _lastBackgroundValidationResult;
+    private JsonValidationResult? _lastBackgroundValidationResult;
     private Stopwatch? _operationStopwatch;
     private long _operationTotalBytes;
     private string _operationName = "Load";
