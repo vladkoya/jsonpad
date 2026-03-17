@@ -2,7 +2,7 @@
 
 Windows notepad-style editor for very large JSON files, built with C# and WPF.
 
-See `VERSION_UPDATES.md` for release-by-release changes.
+See `VERSION_UPDATES.md` for a Keep a Changelog-style release history (starting at v1.0.0).
 
 ## What it supports
 
