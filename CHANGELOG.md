@@ -14,7 +14,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Search status feedback showing where the search scanned/found, with found text highlighted in view.
 - Ability to close open tabs (tab-header X, menu, and Ctrl+W) with per-tab unsaved-change prompt.
 - Explicit ultra-large file open choice: **Open paged (recommended)** or **Open fully (experimental)**.
-- Optional line numbers with a View menu toggle.
 
 ## [1.2.0] - 2026-03-17
 
