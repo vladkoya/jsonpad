@@ -1,8 +1,8 @@
 using System.ComponentModel;
 using System.IO;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Input;
-using ICSharpCode.AvalonEdit.Highlighting;
 using JsonPad.Services;
 using JsonPad.Ui;
 using Microsoft.Win32;
@@ -27,7 +27,7 @@ public partial class MainWindow : Window
         UpdateDocumentStats();
         UpdateCaretStatus();
 
-        Editor.TextArea.Caret.PositionChanged += (_, _) => UpdateCaretStatus();
+        Editor.SelectionChanged += (_, _) => UpdateCaretStatus();
         PreviewKeyDown += MainWindow_PreviewKeyDown;
     }
 
@@ -110,14 +110,15 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (lineNumber > Editor.Document.LineCount)
+        if (lineNumber > Editor.LineCount)
         {
-            lineNumber = Editor.Document.LineCount;
+            lineNumber = Editor.LineCount;
         }
 
-        var line = Editor.Document.GetLineByNumber(lineNumber);
-        Editor.CaretOffset = line.Offset;
-        Editor.ScrollToLine(lineNumber);
+        var lineIndex = Math.Max(0, lineNumber - 1);
+        var charIndex = Editor.GetCharacterIndexFromLineIndex(lineIndex);
+        Editor.Select(Math.Max(0, charIndex), 0);
+        Editor.ScrollToLine(lineIndex);
         Editor.Focus();
         UpdateCaretStatus();
     }
@@ -240,7 +241,7 @@ public partial class MainWindow : Window
             {
                 MessageBox.Show(
                     this,
-                    "Loaded in large-file mode. Syntax highlighting is disabled for better responsiveness.",
+                    "Loaded in large-file mode. Word wrap is disabled for better responsiveness.",
                     "Large file mode",
                     MessageBoxButton.OK,
                     MessageBoxImage.Information);
@@ -393,7 +394,11 @@ public partial class MainWindow : Window
         }
 
         Editor.Select(index, term.Length);
-        Editor.ScrollToLine(Editor.Document.GetLineByOffset(index).LineNumber);
+        var lineIndex = Editor.GetLineIndexFromCharacterIndex(index);
+        if (lineIndex >= 0)
+        {
+            Editor.ScrollToLine(lineIndex);
+        }
         Editor.Focus();
         _lastFindIndex = index + term.Length;
         UpdateCaretStatus();
@@ -496,15 +501,13 @@ public partial class MainWindow : Window
 
     private void ConfigureEditorForStandardMode()
     {
-        Editor.SyntaxHighlighting = HighlightingManager.Instance.GetDefinition("JavaScript");
-        Editor.WordWrap = true;
+        Editor.TextWrapping = TextWrapping.Wrap;
         ModeTextBlock.Text = "Mode: Standard";
     }
 
     private void ConfigureEditorForLargeMode()
     {
-        Editor.SyntaxHighlighting = null;
-        Editor.WordWrap = false;
+        Editor.TextWrapping = TextWrapping.NoWrap;
         ModeTextBlock.Text = "Mode: Large file";
     }
 
@@ -539,10 +542,17 @@ public partial class MainWindow : Window
 
     private void UpdateCaretStatus()
     {
-        var offset = Editor.CaretOffset;
-        var line = Editor.Document.GetLineByOffset(Math.Max(0, offset));
-        var column = offset - line.Offset + 1;
-        LineStatusText.Text = $"Line: {line.LineNumber:N0}, Col: {column:N0}";
+        var offset = Editor.SelectionStart;
+        var lineIndex = Editor.GetLineIndexFromCharacterIndex(offset);
+        if (lineIndex < 0)
+        {
+            LineStatusText.Text = "Line: 1, Col: 1";
+            return;
+        }
+
+        var firstCharOfLine = Editor.GetCharacterIndexFromLineIndex(lineIndex);
+        var column = Math.Max(1, offset - firstCharOfLine + 1);
+        LineStatusText.Text = $"Line: {lineIndex + 1:N0}, Col: {column:N0}";
     }
 
     private void UpdateWindowTitle()
