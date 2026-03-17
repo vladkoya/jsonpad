@@ -3,6 +3,7 @@ using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Threading;
 using JsonPad.Services;
 using JsonPad.Ui;
 using Microsoft.Win32;
@@ -203,12 +204,13 @@ public partial class MainWindow : Window
 
     private void Editor_TextChanged(object sender, EventArgs e)
     {
-        if (!_suppressTextChanged)
+        if (_suppressTextChanged)
         {
-            _isDirty = true;
-            UpdateWindowTitle();
+            return;
         }
 
+        _isDirty = true;
+        UpdateWindowTitle();
         UpdateDocumentStats();
     }
 
@@ -219,23 +221,61 @@ public partial class MainWindow : Window
             BeginOperation();
             var fileInfo = new FileInfo(path);
             _isLargeFileMode = fileInfo.Length >= LargeFileThresholdBytes;
+            _currentFilePath = path;
+            FilePathStatusText.Text = path;
+            UpdateWindowTitle();
             ApplyEditorMode();
 
             var progress = new Progress<double>(value => OperationProgressBar.Value = value);
             var cts = CreateOperationCancellationSource();
-            var text = await LargeFileService.ReadTextAsync(path, progress, cts.Token);
-
             _suppressTextChanged = true;
-            Editor.Text = text;
+            Editor.Clear();
+
+            if (_isLargeFileMode)
+            {
+                var pending = new System.Text.StringBuilder();
+                const int uiChunkChars = 1024 * 1024;
+
+                await LargeFileService.StreamTextAsync(
+                    path,
+                    async chunk =>
+                    {
+                        pending.Append(chunk);
+                        if (pending.Length >= uiChunkChars)
+                        {
+                            var uiChunk = pending.ToString();
+                            pending.Clear();
+                            await Dispatcher.InvokeAsync(
+                                () => Editor.AppendText(uiChunk),
+                                DispatcherPriority.Background,
+                                cts.Token);
+                        }
+                    },
+                    progress,
+                    cts.Token);
+
+                if (pending.Length > 0)
+                {
+                    var uiChunk = pending.ToString();
+                    await Dispatcher.InvokeAsync(
+                        () => Editor.AppendText(uiChunk),
+                        DispatcherPriority.Background,
+                        cts.Token);
+                }
+            }
+            else
+            {
+                var text = await LargeFileService.ReadTextAsync(path, progress, cts.Token);
+                Editor.Text = text;
+            }
+
             _suppressTextChanged = false;
 
-            _currentFilePath = path;
             _isDirty = false;
             _lastFindIndex = 0;
             UpdateWindowTitle();
             UpdateDocumentStats();
             UpdateCaretStatus();
-            FilePathStatusText.Text = path;
 
             if (_isLargeFileMode)
             {
@@ -501,12 +541,14 @@ public partial class MainWindow : Window
 
     private void ConfigureEditorForStandardMode()
     {
+        Editor.IsUndoEnabled = true;
         Editor.TextWrapping = TextWrapping.Wrap;
         ModeTextBlock.Text = "Mode: Standard";
     }
 
     private void ConfigureEditorForLargeMode()
     {
+        Editor.IsUndoEnabled = false;
         Editor.TextWrapping = TextWrapping.NoWrap;
         ModeTextBlock.Text = "Mode: Large file";
     }

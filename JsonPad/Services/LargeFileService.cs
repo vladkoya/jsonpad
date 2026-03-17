@@ -5,7 +5,7 @@ namespace JsonPad.Services;
 
 public static class LargeFileService
 {
-    private const int BufferSize = 1024 * 64;
+    private const int BufferSize = 1024 * 256;
 
     public static async Task<string> ReadTextAsync(
         string path,
@@ -32,7 +32,7 @@ public static class LargeFileService
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var read = await reader.ReadAsync(buffer.AsMemory(0, buffer.Length), cancellationToken);
+            var read = await reader.ReadAsync(buffer.AsMemory(0, buffer.Length), cancellationToken).ConfigureAwait(false);
             if (read == 0)
             {
                 break;
@@ -47,6 +47,45 @@ public static class LargeFileService
 
         progress?.Report(1.0);
         return builder.ToString();
+    }
+
+    public static async Task StreamTextAsync(
+        string path,
+        Func<string, Task> onChunk,
+        IProgress<double>? progress,
+        CancellationToken cancellationToken)
+    {
+        var fileInfo = new FileInfo(path);
+        var length = fileInfo.Length;
+
+        await using var stream = new FileStream(
+            path,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read,
+            BufferSize,
+            useAsync: true);
+
+        using var reader = new StreamReader(stream, detectEncodingFromByteOrderMarks: true);
+        var buffer = new char[BufferSize];
+
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var read = await reader.ReadAsync(buffer.AsMemory(0, buffer.Length), cancellationToken).ConfigureAwait(false);
+            if (read == 0)
+            {
+                break;
+            }
+
+            await onChunk(new string(buffer, 0, read)).ConfigureAwait(false);
+            if (length > 0)
+            {
+                progress?.Report((double)stream.Position / length);
+            }
+        }
+
+        progress?.Report(1.0);
     }
 
     public static async Task WriteTextAsync(
@@ -71,7 +110,7 @@ public static class LargeFileService
             cancellationToken.ThrowIfCancellationRequested();
 
             var chunkSize = Math.Min(BufferSize, total - index);
-            await writer.WriteAsync(text.AsMemory(index, chunkSize), cancellationToken);
+            await writer.WriteAsync(text.AsMemory(index, chunkSize), cancellationToken).ConfigureAwait(false);
             index += chunkSize;
 
             if (total > 0)
@@ -80,7 +119,7 @@ public static class LargeFileService
             }
         }
 
-        await writer.FlushAsync(cancellationToken);
+        await writer.FlushAsync(cancellationToken).ConfigureAwait(false);
         progress?.Report(1.0);
     }
 

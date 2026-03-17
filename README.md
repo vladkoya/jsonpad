@@ -5,6 +5,7 @@ Windows notepad-style editor for very large JSON files, built with C# and WPF.
 ## What it supports
 
 - Open and save large JSON files asynchronously
+- Stream large-file loading in chunks to keep UI responsive
 - Cancel long read/write operations
 - Large-file mode (disables word wrap for better responsiveness)
 - JSON validate / format / minify
