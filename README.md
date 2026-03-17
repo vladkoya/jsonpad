@@ -7,11 +7,13 @@ See `CHANGELOG.md` for a Keep a Changelog-style release history (starting at v1.
 ## What it supports
 
 - Open and save large JSON files asynchronously
+- Open multiple files in a tabbed document view
 - Stream large-file loading in chunks to keep UI responsive
 - Cancel long read/write operations
 - Large-file mode (disables word wrap for better responsiveness)
 - Ultra-large mode (>= 300 MB) with read-only byte paging
 - Ultra-large mode supports search across the entire file (with wrap-around)
+- Find now shows search progress/status and keeps found text highlighted
 - Background streaming JSON validation while files are loading
 - Live load progress, throughput, and ETA in the status bar
 - JSON validate / format / minify

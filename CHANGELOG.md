@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Ultra-large mode search now scans the entire file (with wrap-around) instead of only the currently loaded page.
+- Multi-file tabbed document view for opening and switching between multiple JSON files.
+- Search status feedback showing where the search scanned/found, with found text highlighted in view.
 
 ## [1.2.0] - 2026-03-17
 

@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Text;
@@ -35,6 +36,28 @@ public partial class MainWindow : Window
     private string? _lastUltraLargeSearchTerm;
     private long _ultraLargeSearchNextByte;
     private UltraLargeSession? _ultraLargeSession;
+    private readonly Dictionary<TabItem, DocumentSession> _documents = new();
+    private DocumentSession? _activeDocument;
+    private bool _isSwitchingDocument;
+
+    private TextBox Editor =>
+        _activeDocument?.Editor
+        ?? throw new InvalidOperationException("No active document.");
+
+    private sealed class DocumentSession
+    {
+        public required TabItem TabItem { get; init; }
+        public required TextBox Editor { get; init; }
+        public string? FilePath { get; set; }
+        public bool IsDirty { get; set; }
+        public bool IsLargeFileMode { get; set; }
+        public bool IsUltraLargeMode { get; set; }
+        public int LastFindIndex { get; set; }
+        public string? LastUltraLargeSearchTerm { get; set; }
+        public long UltraLargeSearchNextByte { get; set; }
+        public UltraLargeSession? UltraLargeSession { get; set; }
+        public JsonValidationResult? LastBackgroundValidationResult { get; set; }
+    }
 
     private sealed class UltraLargeSession
     {
@@ -55,36 +78,175 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
-        ConfigureEditorForStandardMode();
-        UpdateWindowTitle();
-        UpdateDocumentStats();
-        UpdateCaretStatus();
-        PrevPageButton.IsEnabled = false;
-        NextPageButton.IsEnabled = false;
-
-        Editor.SelectionChanged += (_, _) => UpdateCaretStatus();
+        CreateAndActivateDocument();
         PreviewKeyDown += MainWindow_PreviewKeyDown;
     }
 
-    private async void Open_Click(object sender, RoutedEventArgs e)
+    private DocumentSession CreateAndActivateDocument(string? initialHeader = null)
     {
-        if (!await ConfirmDiscardUnsavedChangesAsync())
+        var textBox = new TextBox
+        {
+            FontFamily = new System.Windows.Media.FontFamily("Consolas"),
+            FontSize = 14,
+            AcceptsReturn = true,
+            AcceptsTab = true,
+            TextWrapping = TextWrapping.Wrap,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto
+        };
+        textBox.TextChanged += Editor_TextChanged;
+        textBox.SelectionChanged += (_, _) => UpdateCaretStatus();
+
+        var tabItem = new TabItem
+        {
+            Header = string.IsNullOrWhiteSpace(initialHeader) ? "Untitled" : initialHeader,
+            Content = textBox
+        };
+
+        var session = new DocumentSession
+        {
+            TabItem = tabItem,
+            Editor = textBox
+        };
+
+        _documents[tabItem] = session;
+        DocumentTabs.Items.Add(tabItem);
+        DocumentTabs.SelectedItem = tabItem;
+        ActivateDocument(session);
+        return session;
+    }
+
+    private void DocumentTabs_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_isSwitchingDocument)
         {
             return;
         }
 
+        if (DocumentTabs.SelectedItem is TabItem tab && _documents.TryGetValue(tab, out var session))
+        {
+            ActivateDocument(session);
+        }
+    }
+
+    private void ActivateDocument(DocumentSession session)
+    {
+        if (ReferenceEquals(_activeDocument, session))
+        {
+            return;
+        }
+
+        SaveActiveSessionState();
+
+        _isSwitchingDocument = true;
+        try
+        {
+            _activeDocument = session;
+            _currentFilePath = session.FilePath;
+            _isDirty = session.IsDirty;
+            _isLargeFileMode = session.IsLargeFileMode;
+            _isUltraLargeMode = session.IsUltraLargeMode;
+            _lastFindIndex = session.LastFindIndex;
+            _lastUltraLargeSearchTerm = session.LastUltraLargeSearchTerm;
+            _ultraLargeSearchNextByte = session.UltraLargeSearchNextByte;
+            _ultraLargeSession = session.UltraLargeSession;
+            _lastBackgroundValidationResult = session.LastBackgroundValidationResult;
+
+            ApplyEditorMode();
+            if (_isUltraLargeMode && _ultraLargeSession is not null)
+            {
+                UpdateUltraLargeStatus(_ultraLargeSession);
+            }
+            else
+            {
+                UltraLargeStatusText.Text = "Ultra-large mode";
+                PrevPageButton.IsEnabled = false;
+                NextPageButton.IsEnabled = false;
+            }
+            UpdateWindowTitle();
+            UpdateTabHeader(session);
+            UpdateDocumentStats();
+            UpdateCaretStatus();
+            FilePathStatusText.Text = string.IsNullOrWhiteSpace(_currentFilePath) ? "No file loaded" : _currentFilePath;
+            FindStatusText.Text = "Ready";
+
+            ValidationStatusText.Text = _lastBackgroundValidationResult switch
+            {
+                null => "Validation: idle",
+                { IsValid: true } => "Validation: valid",
+                _ => "Validation: invalid"
+            };
+        }
+        finally
+        {
+            _isSwitchingDocument = false;
+        }
+    }
+
+    private void SaveActiveSessionState()
+    {
+        if (_activeDocument is null)
+        {
+            return;
+        }
+
+        _activeDocument.FilePath = _currentFilePath;
+        _activeDocument.IsDirty = _isDirty;
+        _activeDocument.IsLargeFileMode = _isLargeFileMode;
+        _activeDocument.IsUltraLargeMode = _isUltraLargeMode;
+        _activeDocument.LastFindIndex = _lastFindIndex;
+        _activeDocument.LastUltraLargeSearchTerm = _lastUltraLargeSearchTerm;
+        _activeDocument.UltraLargeSearchNextByte = _ultraLargeSearchNextByte;
+        _activeDocument.UltraLargeSession = _ultraLargeSession;
+        _activeDocument.LastBackgroundValidationResult = _lastBackgroundValidationResult;
+        UpdateTabHeader(_activeDocument);
+    }
+
+    private void UpdateTabHeader(DocumentSession session)
+    {
+        var baseName = string.IsNullOrWhiteSpace(session.FilePath)
+            ? "Untitled"
+            : Path.GetFileName(session.FilePath);
+        session.TabItem.Header = $"{(session.IsDirty ? "*" : string.Empty)}{baseName}";
+    }
+
+    private async void Open_Click(object sender, RoutedEventArgs e)
+    {
         var dialog = new OpenFileDialog
         {
             Filter = "JSON files (*.json)|*.json|All files (*.*)|*.*",
             CheckFileExists = true,
-            Multiselect = false
+            Multiselect = true
         };
         if (dialog.ShowDialog(this) != true)
         {
             return;
         }
 
-        await LoadFileAsync(dialog.FileName);
+        var reusable = CanReuseActiveEmptyDocument();
+        foreach (var fileName in dialog.FileNames)
+        {
+            var session = reusable
+                ? _activeDocument!
+                : CreateAndActivateDocument(Path.GetFileName(fileName));
+            await LoadFileAsync(fileName);
+            session.FilePath = _currentFilePath;
+            session.IsDirty = _isDirty;
+            UpdateTabHeader(session);
+            reusable = false;
+        }
+    }
+
+    private bool CanReuseActiveEmptyDocument()
+    {
+        if (_activeDocument is null)
+        {
+            return false;
+        }
+
+        return string.IsNullOrWhiteSpace(_activeDocument.FilePath)
+               && !_activeDocument.IsDirty
+               && string.IsNullOrEmpty(_activeDocument.Editor.Text);
     }
 
     private async void Save_Click(object sender, RoutedEventArgs e)
@@ -256,8 +418,16 @@ public partial class MainWindow : Window
 
     protected override void OnClosing(CancelEventArgs e)
     {
-        if (_isDirty)
+        SaveActiveSessionState();
+
+        foreach (var session in _documents.Values)
         {
+            if (!session.IsDirty)
+            {
+                continue;
+            }
+
+            ActivateDocument(session);
             var result = MessageBox.Show(
                 this,
                 "You have unsaved changes. Save now?",
@@ -303,6 +473,7 @@ public partial class MainWindow : Window
         _isDirty = true;
         UpdateWindowTitle();
         UpdateDocumentStats();
+        SaveActiveSessionState();
     }
 
     private async Task LoadFileAsync(string path)
@@ -378,6 +549,7 @@ public partial class MainWindow : Window
             UpdateWindowTitle();
             UpdateDocumentStats();
             UpdateCaretStatus();
+            SaveActiveSessionState();
             if (_isUltraLargeMode)
             {
                 LoadMetricsStatusText.Text = "Load: first page ready (paged mode)";
@@ -467,6 +639,7 @@ public partial class MainWindow : Window
             _isDirty = false;
             UpdateWindowTitle();
             FilePathStatusText.Text = path;
+            SaveActiveSessionState();
         }
         catch (OperationCanceledException)
         {
@@ -511,11 +684,23 @@ public partial class MainWindow : Window
     {
         try
         {
+            if (_isUltraLargeMode)
+            {
+                MessageBox.Show(
+                    this,
+                    "Save is unavailable in ultra-large mode because the editor is paged read-only.",
+                    "Unavailable",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+                return false;
+            }
+
             LargeFileService.WriteText(path, Editor.Text, progress: null, CancellationToken.None);
             _currentFilePath = path;
             _isDirty = false;
             UpdateWindowTitle();
             FilePathStatusText.Text = path;
+            SaveActiveSessionState();
             return true;
         }
         catch (Exception ex)
@@ -591,6 +776,7 @@ public partial class MainWindow : Window
         UpdateUltraLargeStatus(session);
         UpdateDocumentStats();
         UpdateCaretStatus();
+        SaveActiveSessionState();
     }
 
     private void UpdateUltraLargeStatus(UltraLargeSession session)
@@ -611,6 +797,10 @@ public partial class MainWindow : Window
         var validationToken = _validationCts.Token;
 
         _lastBackgroundValidationResult = null;
+        if (_activeDocument is not null)
+        {
+            _activeDocument.LastBackgroundValidationResult = null;
+        }
         ValidationStatusText.Text = "Validation: running...";
 
         _validationTask = Task.Run(async () =>
@@ -620,13 +810,19 @@ public partial class MainWindow : Window
                 var result = await LargeFileService.ValidateJsonStreamAsync(path, progress: null, validationToken);
                 await Dispatcher.InvokeAsync(() =>
                 {
-                    if (!string.Equals(_currentFilePath, path, StringComparison.OrdinalIgnoreCase))
+                    foreach (var session in _documents.Values)
                     {
-                        return;
+                        if (string.Equals(session.FilePath, path, StringComparison.OrdinalIgnoreCase))
+                        {
+                            session.LastBackgroundValidationResult = result;
+                        }
                     }
 
-                    _lastBackgroundValidationResult = result;
-                    ValidationStatusText.Text = result.IsValid ? "Validation: valid" : "Validation: invalid";
+                    if (string.Equals(_currentFilePath, path, StringComparison.OrdinalIgnoreCase))
+                    {
+                        _lastBackgroundValidationResult = result;
+                        ValidationStatusText.Text = result.IsValid ? "Validation: valid" : "Validation: invalid";
+                    }
                 });
             }
             catch (OperationCanceledException)
@@ -721,6 +917,9 @@ public partial class MainWindow : Window
     private void ShowFindPanel()
     {
         FindPanel.Visibility = Visibility.Visible;
+        FindStatusText.Text = _isUltraLargeMode
+            ? "Ultra-large search scans the whole file."
+            : "Ready";
         FindTextBox.Focus();
         FindTextBox.SelectAll();
     }
@@ -728,6 +927,7 @@ public partial class MainWindow : Window
     private void HideFindPanel()
     {
         FindPanel.Visibility = Visibility.Collapsed;
+        FindStatusText.Text = "Ready";
         Editor.Focus();
     }
 
@@ -754,6 +954,7 @@ public partial class MainWindow : Window
 
         if (index < 0)
         {
+            FindStatusText.Text = "Not found in current document.";
             MessageBox.Show(this, "Search text not found.", "Find", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
@@ -767,7 +968,9 @@ public partial class MainWindow : Window
 
         Editor.Focus();
         _lastFindIndex = index + term.Length;
+        FindStatusText.Text = $"Found at character {index + 1:N0}.";
         UpdateCaretStatus();
+        SaveActiveSessionState();
     }
 
     private async Task FindNextUltraLargeAsync(string term)
@@ -788,6 +991,7 @@ public partial class MainWindow : Window
             BeginOperation();
             var cts = CreateOperationCancellationSource();
             var progress = CreateOperationProgress(_ultraLargeSession.FileLength, "Search");
+            FindStatusText.Text = $"Searching from byte {_ultraLargeSearchNextByte + 1:N0}...";
 
             var match = await LargeFileService.FindTextInRangeAsync(
                 _ultraLargeSession.Path,
@@ -798,6 +1002,8 @@ public partial class MainWindow : Window
                 progress,
                 cts.Token);
             var wrapped = false;
+            var searchRangeStart = _ultraLargeSearchNextByte;
+            var searchRangeEnd = _ultraLargeSession.FileLength;
 
             if (match < 0 && _ultraLargeSearchNextByte > 0)
             {
@@ -810,10 +1016,14 @@ public partial class MainWindow : Window
                     ignoreCase: true,
                     progress,
                     cts.Token);
+                searchRangeStart = 0;
+                searchRangeEnd = _ultraLargeSearchNextByte;
             }
 
             if (match < 0)
             {
+                FindStatusText.Text =
+                    $"Searched bytes {searchRangeStart + 1:N0}-{searchRangeEnd:N0}. Not found.";
                 MessageBox.Show(this, "Search text not found.", "Find", MessageBoxButton.OK, MessageBoxImage.Information);
                 return;
             }
@@ -822,6 +1032,10 @@ public partial class MainWindow : Window
             _ultraLargeSearchNextByte = Math.Min(
                 _ultraLargeSession.FileLength,
                 match + Encoding.UTF8.GetByteCount(term));
+            FindStatusText.Text = wrapped
+                ? $"Found at byte {match + 1:N0} (wrapped search)."
+                : $"Found at byte {match + 1:N0}.";
+            SaveActiveSessionState();
 
             if (wrapped)
             {
@@ -1090,6 +1304,10 @@ public partial class MainWindow : Window
     {
         var fileName = string.IsNullOrWhiteSpace(_currentFilePath) ? "Untitled" : Path.GetFileName(_currentFilePath);
         var dirtyPrefix = _isDirty ? "*" : string.Empty;
-        Title = $"{dirtyPrefix}{fileName} - JsonPad";
+        Title = $"{dirtyPrefix}{fileName} - JsonPad ({DocumentTabs.Items.Count} tabs)";
+        if (_activeDocument is not null)
+        {
+            UpdateTabHeader(_activeDocument);
+        }
     }
 }
