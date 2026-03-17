@@ -48,6 +48,7 @@ public partial class MainWindow : Window
     {
         public required TabItem TabItem { get; init; }
         public required TextBox Editor { get; init; }
+        public required TextBlock HeaderTextBlock { get; init; }
         public string? FilePath { get; set; }
         public bool IsDirty { get; set; }
         public bool IsLargeFileMode { get; set; }
@@ -97,23 +98,58 @@ public partial class MainWindow : Window
         textBox.TextChanged += Editor_TextChanged;
         textBox.SelectionChanged += (_, _) => UpdateCaretStatus();
 
-        var tabItem = new TabItem
+        var tabItem = new TabItem { Content = textBox };
+        var headerText = new TextBlock
         {
-            Header = string.IsNullOrWhiteSpace(initialHeader) ? "Untitled" : initialHeader,
-            Content = textBox
+            VerticalAlignment = VerticalAlignment.Center
         };
 
         var session = new DocumentSession
         {
             TabItem = tabItem,
-            Editor = textBox
+            Editor = textBox,
+            HeaderTextBlock = headerText
         };
+        tabItem.Header = CreateClosableTabHeader(session);
 
         _documents[tabItem] = session;
         DocumentTabs.Items.Add(tabItem);
         DocumentTabs.SelectedItem = tabItem;
+        session.HeaderTextBlock.Text = string.IsNullOrWhiteSpace(initialHeader) ? "Untitled" : initialHeader;
         ActivateDocument(session);
         return session;
+    }
+
+    private StackPanel CreateClosableTabHeader(DocumentSession session)
+    {
+        var closeButton = new Button
+        {
+            Content = "x",
+            Width = 16,
+            Height = 16,
+            Padding = new Thickness(0),
+            Margin = new Thickness(8, 0, 0, 0),
+            VerticalAlignment = VerticalAlignment.Center,
+            FontSize = 10,
+            ToolTip = "Close tab",
+            Tag = session
+        };
+        closeButton.Click += (_, e) =>
+        {
+            e.Handled = true;
+            if (closeButton.Tag is DocumentSession doc)
+            {
+                CloseSession(doc);
+            }
+        };
+
+        var panel = new StackPanel
+        {
+            Orientation = Orientation.Horizontal
+        };
+        panel.Children.Add(session.HeaderTextBlock);
+        panel.Children.Add(closeButton);
+        return panel;
     }
 
     private void DocumentTabs_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -207,7 +243,7 @@ public partial class MainWindow : Window
         var baseName = string.IsNullOrWhiteSpace(session.FilePath)
             ? "Untitled"
             : Path.GetFileName(session.FilePath);
-        session.TabItem.Header = $"{(session.IsDirty ? "*" : string.Empty)}{baseName}";
+        session.HeaderTextBlock.Text = $"{(session.IsDirty ? "*" : string.Empty)}{baseName}";
     }
 
     private async void Open_Click(object sender, RoutedEventArgs e)
