@@ -76,6 +76,13 @@ public partial class MainWindow : Window
         public long CurrentEndByte { get; set; }
     }
 
+    private enum UltraLargeOpenMode
+    {
+        Cancel,
+        PagedRecommended,
+        FullExperimental
+    }
+
     public MainWindow()
     {
         InitializeComponent();
@@ -262,15 +269,121 @@ public partial class MainWindow : Window
         var reusable = CanReuseActiveEmptyDocument();
         foreach (var fileName in dialog.FileNames)
         {
+            var forceFullLoadForUltra = false;
+            var fileInfo = new FileInfo(fileName);
+            if (fileInfo.Length >= UltraLargeFileThresholdBytes)
+            {
+                var openMode = ShowUltraLargeOpenModeDialog(fileName, fileInfo.Length);
+                if (openMode == UltraLargeOpenMode.Cancel)
+                {
+                    continue;
+                }
+
+                forceFullLoadForUltra = openMode == UltraLargeOpenMode.FullExperimental;
+            }
+
             var session = reusable
                 ? _activeDocument!
                 : CreateAndActivateDocument(Path.GetFileName(fileName));
-            await LoadFileAsync(fileName);
+            await LoadFileAsync(fileName, forceFullLoadForUltra);
             session.FilePath = _currentFilePath;
             session.IsDirty = _isDirty;
             UpdateTabHeader(session);
             reusable = false;
         }
+    }
+
+    private UltraLargeOpenMode ShowUltraLargeOpenModeDialog(string filePath, long fileLength)
+    {
+        var selectedMode = UltraLargeOpenMode.Cancel;
+        var fileName = Path.GetFileName(filePath);
+
+        var window = new Window
+        {
+            Title = "Ultra-large file open mode",
+            Width = 620,
+            Height = 210,
+            ResizeMode = ResizeMode.NoResize,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Owner = this
+        };
+
+        var root = new Grid { Margin = new Thickness(14) };
+        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+
+        var title = new TextBlock
+        {
+            Text = $"\"{fileName}\" is an ultra-large file ({fileLength / (1024.0 * 1024.0):N1} MB).",
+            FontWeight = FontWeights.Bold,
+            TextWrapping = TextWrapping.Wrap
+        };
+        Grid.SetRow(title, 0);
+
+        var note = new TextBlock
+        {
+            Margin = new Thickness(0, 10, 0, 0),
+            Text = "Choose open mode:",
+            TextWrapping = TextWrapping.Wrap
+        };
+        Grid.SetRow(note, 1);
+
+        var buttons = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Margin = new Thickness(0, 16, 0, 0)
+        };
+
+        var pagedButton = new Button
+        {
+            Content = "Open paged (recommended)",
+            Width = 190
+        };
+        pagedButton.Click += (_, _) =>
+        {
+            selectedMode = UltraLargeOpenMode.PagedRecommended;
+            window.DialogResult = true;
+        };
+
+        var fullButton = new Button
+        {
+            Content = "Open fully (experimental)",
+            Width = 190,
+            Margin = new Thickness(8, 0, 0, 0)
+        };
+        fullButton.Click += (_, _) =>
+        {
+            selectedMode = UltraLargeOpenMode.FullExperimental;
+            window.DialogResult = true;
+        };
+
+        var cancelButton = new Button
+        {
+            Content = "Cancel",
+            Width = 90,
+            Margin = new Thickness(8, 0, 0, 0),
+            IsCancel = true
+        };
+        cancelButton.Click += (_, _) =>
+        {
+            selectedMode = UltraLargeOpenMode.Cancel;
+            window.DialogResult = false;
+        };
+
+        buttons.Children.Add(pagedButton);
+        buttons.Children.Add(fullButton);
+        buttons.Children.Add(cancelButton);
+        Grid.SetRow(buttons, 2);
+
+        root.Children.Add(title);
+        root.Children.Add(note);
+        root.Children.Add(buttons);
+
+        window.Content = root;
+        window.ShowDialog();
+        return selectedMode;
     }
 
     private bool CanReuseActiveEmptyDocument()
@@ -613,14 +726,15 @@ public partial class MainWindow : Window
         SaveActiveSessionState();
     }
 
-    private async Task LoadFileAsync(string path)
+    private async Task LoadFileAsync(string path, bool forceFullLoadForUltra = false)
     {
         try
         {
             BeginOperation();
             var fileInfo = new FileInfo(path);
             _isLargeFileMode = fileInfo.Length >= LargeFileThresholdBytes;
-            _isUltraLargeMode = fileInfo.Length >= UltraLargeFileThresholdBytes;
+            var isUltraCandidate = fileInfo.Length >= UltraLargeFileThresholdBytes;
+            _isUltraLargeMode = isUltraCandidate && !forceFullLoadForUltra;
             _ultraLargeSession = _isUltraLargeMode
                 ? new UltraLargeSession(path, fileInfo.Length, UltraLargePageSizeBytes)
                 : null;
@@ -705,7 +819,9 @@ public partial class MainWindow : Window
             {
                 MessageBox.Show(
                     this,
-                    "Loaded in large-file mode. Word wrap is disabled for better responsiveness.",
+                    forceFullLoadForUltra
+                        ? "Loaded fully in experimental mode for an ultra-large file. Performance and memory usage may be high."
+                        : "Loaded in large-file mode. Word wrap is disabled for better responsiveness.",
                     "Large file mode",
                     MessageBoxButton.OK,
                     MessageBoxImage.Information);

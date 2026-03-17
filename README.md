@@ -13,6 +13,7 @@ See `CHANGELOG.md` for a Keep a Changelog-style release history (starting at v1.
 - Cancel long read/write operations
 - Large-file mode (disables word wrap for better responsiveness)
 - Ultra-large mode (>= 300 MB) with read-only byte paging
+- Ultra-large files prompt for open mode: paged (recommended) or full-load (experimental)
 - Ultra-large mode supports search across the entire file (with wrap-around)
 - Find now shows search progress/status and keeps found text highlighted
 - Background streaming JSON validation while files are loading
