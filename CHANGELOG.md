@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Ultra-large mode search now scans the entire file (with wrap-around) instead of only the currently loaded page.
+
 ## [1.2.0] - 2026-03-17
 
 ### Added

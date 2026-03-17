@@ -197,6 +197,92 @@ public static class LargeFileService
         }
     }
 
+    public static async Task<long> FindTextInRangeAsync(
+        string path,
+        string term,
+        long startByteInclusive,
+        long endByteExclusive,
+        bool ignoreCase,
+        IProgress<double>? progress,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrEmpty(term))
+        {
+            return -1;
+        }
+
+        var info = new FileInfo(path);
+        var fileLength = info.Length;
+        if (fileLength <= 0)
+        {
+            return -1;
+        }
+
+        var start = Math.Clamp(startByteInclusive, 0, fileLength);
+        var end = Math.Clamp(endByteExclusive, 0, fileLength);
+        if (end <= start)
+        {
+            return -1;
+        }
+
+        var needle = Encoding.UTF8.GetBytes(term);
+        if (needle.Length == 0)
+        {
+            return -1;
+        }
+
+        var chunkSize = BufferSize * 4;
+        var overlap = Math.Max(0, needle.Length - 1);
+        var buffer = new byte[chunkSize + overlap];
+
+        await using var stream = new FileStream(
+            path,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read,
+            BufferSize,
+            useAsync: true);
+
+        stream.Seek(start, SeekOrigin.Begin);
+        long position = start;
+        var carry = 0;
+
+        while (position < end)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var toRead = (int)Math.Min(chunkSize, end - position);
+            var read = await stream.ReadAsync(buffer.AsMemory(carry, toRead), cancellationToken).ConfigureAwait(false);
+            if (read == 0)
+            {
+                break;
+            }
+
+            var total = carry + read;
+            var index = IndexOfBytes(buffer, total, needle, ignoreCase);
+            if (index >= 0)
+            {
+                var matchByte = position - carry + index;
+                if (matchByte >= start && matchByte < end)
+                {
+                    progress?.Report((double)Math.Min(matchByte + needle.Length, fileLength) / fileLength);
+                    return matchByte;
+                }
+            }
+
+            carry = Math.Min(overlap, total);
+            if (carry > 0)
+            {
+                Buffer.BlockCopy(buffer, total - carry, buffer, 0, carry);
+            }
+
+            position += read;
+            progress?.Report((double)position / fileLength);
+        }
+
+        return -1;
+    }
+
     private static JsonReaderState ConsumeUtf8JsonChunk(
         byte[] buffer,
         int bytesRead,
@@ -233,6 +319,53 @@ public static class LargeFileService
 
         var length = Math.Max(0, count - offset);
         return Encoding.UTF8.GetString(bytes, offset, length);
+    }
+
+    private static int IndexOfBytes(byte[] haystack, int haystackLength, byte[] needle, bool ignoreCase)
+    {
+        if (needle.Length == 0 || haystackLength < needle.Length)
+        {
+            return -1;
+        }
+
+        var last = haystackLength - needle.Length;
+        for (var i = 0; i <= last; i++)
+        {
+            if (BytesMatchAt(haystack, i, needle, ignoreCase))
+            {
+                return i;
+            }
+        }
+
+        return -1;
+    }
+
+    private static bool BytesMatchAt(byte[] haystack, int offset, byte[] needle, bool ignoreCase)
+    {
+        for (var i = 0; i < needle.Length; i++)
+        {
+            var left = haystack[offset + i];
+            var right = needle[i];
+            if (ignoreCase)
+            {
+                left = ToLowerAscii(left);
+                right = ToLowerAscii(right);
+            }
+
+            if (left != right)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static byte ToLowerAscii(byte value)
+    {
+        return value is >= (byte)'A' and <= (byte)'Z'
+            ? (byte)(value + 32)
+            : value;
     }
 
     public static async Task WriteTextAsync(

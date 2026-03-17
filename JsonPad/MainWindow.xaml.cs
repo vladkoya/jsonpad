@@ -32,6 +32,8 @@ public partial class MainWindow : Window
     private string _operationName = "Load";
     private DateTime _lastMetricsUpdateUtc = DateTime.MinValue;
     private int _lastFindIndex;
+    private string? _lastUltraLargeSearchTerm;
+    private long _ultraLargeSearchNextByte;
     private UltraLargeSession? _ultraLargeSession;
 
     private sealed class UltraLargeSession
@@ -110,11 +112,11 @@ public partial class MainWindow : Window
         HideFindPanel();
     }
 
-    private void FindTextBox_KeyDown(object sender, KeyEventArgs e)
+    private async void FindTextBox_KeyDown(object sender, KeyEventArgs e)
     {
         if (e.Key == Key.Enter)
         {
-            FindNext();
+            await FindNextAsync();
             e.Handled = true;
         }
         else if (e.Key == Key.Escape)
@@ -124,9 +126,9 @@ public partial class MainWindow : Window
         }
     }
 
-    private void FindNext_Click(object sender, RoutedEventArgs e)
+    private async void FindNext_Click(object sender, RoutedEventArgs e)
     {
-        FindNext();
+        await FindNextAsync();
     }
 
     private void GoToLine_Click(object sender, RoutedEventArgs e)
@@ -371,6 +373,8 @@ public partial class MainWindow : Window
 
             _isDirty = false;
             _lastFindIndex = 0;
+            _lastUltraLargeSearchTerm = null;
+            _ultraLargeSearchNextByte = 0;
             UpdateWindowTitle();
             UpdateDocumentStats();
             UpdateCaretStatus();
@@ -727,11 +731,17 @@ public partial class MainWindow : Window
         Editor.Focus();
     }
 
-    private void FindNext()
+    private async Task FindNextAsync()
     {
         var term = FindTextBox.Text;
         if (string.IsNullOrEmpty(term))
         {
+            return;
+        }
+
+        if (_isUltraLargeMode)
+        {
+            await FindNextUltraLargeAsync(term);
             return;
         }
 
@@ -754,9 +764,153 @@ public partial class MainWindow : Window
         {
             Editor.ScrollToLine(lineIndex);
         }
+
         Editor.Focus();
         _lastFindIndex = index + term.Length;
         UpdateCaretStatus();
+    }
+
+    private async Task FindNextUltraLargeAsync(string term)
+    {
+        if (_ultraLargeSession is null || string.IsNullOrWhiteSpace(_currentFilePath))
+        {
+            return;
+        }
+
+        if (!string.Equals(_lastUltraLargeSearchTerm, term, StringComparison.Ordinal))
+        {
+            _lastUltraLargeSearchTerm = term;
+            _ultraLargeSearchNextByte = GetCurrentUltraLargeCursorByte();
+        }
+
+        try
+        {
+            BeginOperation();
+            var cts = CreateOperationCancellationSource();
+            var progress = CreateOperationProgress(_ultraLargeSession.FileLength, "Search");
+
+            var match = await LargeFileService.FindTextInRangeAsync(
+                _ultraLargeSession.Path,
+                term,
+                _ultraLargeSearchNextByte,
+                _ultraLargeSession.FileLength,
+                ignoreCase: true,
+                progress,
+                cts.Token);
+            var wrapped = false;
+
+            if (match < 0 && _ultraLargeSearchNextByte > 0)
+            {
+                wrapped = true;
+                match = await LargeFileService.FindTextInRangeAsync(
+                    _ultraLargeSession.Path,
+                    term,
+                    0,
+                    _ultraLargeSearchNextByte,
+                    ignoreCase: true,
+                    progress,
+                    cts.Token);
+            }
+
+            if (match < 0)
+            {
+                MessageBox.Show(this, "Search text not found.", "Find", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            await MoveUltraLargeViewToMatchAsync(match, term, cts.Token);
+            _ultraLargeSearchNextByte = Math.Min(
+                _ultraLargeSession.FileLength,
+                match + Encoding.UTF8.GetByteCount(term));
+
+            if (wrapped)
+            {
+                LoadMetricsStatusText.Text = "Search: wrapped to beginning";
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            MessageBox.Show(this, "Search cancelled.", "Cancelled", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"Search failed: {ex.Message}", "Search Error", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally
+        {
+            EndOperation();
+        }
+    }
+
+    private async Task MoveUltraLargeViewToMatchAsync(long matchByteOffset, string term, CancellationToken cancellationToken)
+    {
+        if (_ultraLargeSession is null)
+        {
+            return;
+        }
+
+        var centeredPageStart = Math.Max(0, matchByteOffset - _ultraLargeSession.PageSizeBytes / 2);
+        await LoadUltraLargePageAsync(
+            _ultraLargeSession,
+            centeredPageStart,
+            progress: new Progress<double>(_ => { }),
+            cancellationToken);
+
+        var offsetWithinPage = Math.Max(0, matchByteOffset - _ultraLargeSession.CurrentStartByte);
+        var approximateCharIndex = GetCharIndexByUtf8ByteOffset(Editor.Text, offsetWithinPage);
+        var searchStart = Math.Max(0, approximateCharIndex - Math.Max(4, term.Length * 2));
+        var index = Editor.Text.IndexOf(term, searchStart, StringComparison.OrdinalIgnoreCase);
+        if (index < 0)
+        {
+            index = Editor.Text.IndexOf(term, StringComparison.OrdinalIgnoreCase);
+        }
+
+        if (index < 0)
+        {
+            return;
+        }
+
+        Editor.Select(index, term.Length);
+        var lineIndex = Editor.GetLineIndexFromCharacterIndex(index);
+        if (lineIndex >= 0)
+        {
+            Editor.ScrollToLine(lineIndex);
+        }
+
+        Editor.Focus();
+        UpdateCaretStatus();
+    }
+
+    private long GetCurrentUltraLargeCursorByte()
+    {
+        if (_ultraLargeSession is null)
+        {
+            return 0;
+        }
+
+        var charOffset = Math.Clamp(Editor.SelectionStart + Editor.SelectionLength, 0, Editor.Text.Length);
+        var bytesFromStart = Encoding.UTF8.GetByteCount(Editor.Text.AsSpan(0, charOffset));
+        return Math.Clamp(_ultraLargeSession.CurrentStartByte + bytesFromStart, 0, _ultraLargeSession.FileLength);
+    }
+
+    private static int GetCharIndexByUtf8ByteOffset(string text, long utf8ByteOffset)
+    {
+        if (utf8ByteOffset <= 0 || text.Length == 0)
+        {
+            return 0;
+        }
+
+        long consumedBytes = 0;
+        for (var i = 0; i < text.Length; i++)
+        {
+            consumedBytes += Encoding.UTF8.GetByteCount(text.AsSpan(i, 1));
+            if (consumedBytes >= utf8ByteOffset)
+            {
+                return i + 1;
+            }
+        }
+
+        return text.Length;
     }
 
     private void ReplaceEditorText(string newText)

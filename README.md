@@ -11,6 +11,7 @@ See `CHANGELOG.md` for a Keep a Changelog-style release history (starting at v1.
 - Cancel long read/write operations
 - Large-file mode (disables word wrap for better responsiveness)
 - Ultra-large mode (>= 300 MB) with read-only byte paging
+- Ultra-large mode supports search across the entire file (with wrap-around)
 - Background streaming JSON validation while files are loading
 - Live load progress, throughput, and ETA in the status bar
 - JSON validate / format / minify
