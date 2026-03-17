@@ -178,15 +178,22 @@ public partial class MainWindow : Window
 
             if (_lastBackgroundValidationResult is not null)
             {
-                var icon = _lastBackgroundValidationResult.IsValid ? MessageBoxImage.Information : MessageBoxImage.Error;
-                MessageBox.Show(this, _lastBackgroundValidationResult.Message, "JSON Validation", MessageBoxButton.OK, icon);
+                var backgroundValidationIcon = _lastBackgroundValidationResult.IsValid
+                    ? MessageBoxImage.Information
+                    : MessageBoxImage.Error;
+                MessageBox.Show(
+                    this,
+                    _lastBackgroundValidationResult.Message,
+                    "JSON Validation",
+                    MessageBoxButton.OK,
+                    backgroundValidationIcon);
                 return;
             }
         }
 
         var result = JsonTools.Validate(Editor.Text);
-        var icon = result.IsValid ? MessageBoxImage.Information : MessageBoxImage.Error;
-        MessageBox.Show(this, result.Message, "JSON Validation", MessageBoxButton.OK, icon);
+        var validationIcon = result.IsValid ? MessageBoxImage.Information : MessageBoxImage.Error;
+        MessageBox.Show(this, result.Message, "JSON Validation", MessageBoxButton.OK, validationIcon);
     }
 
     private void FormatJson_Click(object sender, RoutedEventArgs e)

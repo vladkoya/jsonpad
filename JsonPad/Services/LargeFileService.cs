@@ -169,25 +169,14 @@ public static class LargeFileService
                     break;
                 }
 
-                var reader = new Utf8JsonReader(
-                    new ReadOnlySpan<byte>(buffer, 0, read),
-                    isFinalBlock: false,
-                    state);
-                while (reader.Read())
-                {
-                }
-
-                state = reader.CurrentState;
+                state = ConsumeUtf8JsonChunk(buffer, read, isFinalBlock: false, state);
                 if (fileLength > 0)
                 {
                     progress?.Report((double)stream.Position / fileLength);
                 }
             }
 
-            var finalReader = new Utf8JsonReader(ReadOnlySpan<byte>.Empty, isFinalBlock: true, state);
-            while (finalReader.Read())
-            {
-            }
+            _ = ConsumeUtf8JsonChunk(Array.Empty<byte>(), 0, isFinalBlock: true, state);
 
             progress?.Report(1.0);
             return new JsonValidationResult(true, "JSON is valid.");
@@ -206,6 +195,23 @@ public static class LargeFileService
         {
             return new JsonValidationResult(false, $"Validation failed: {ex.Message}");
         }
+    }
+
+    private static JsonReaderState ConsumeUtf8JsonChunk(
+        byte[] buffer,
+        int bytesRead,
+        bool isFinalBlock,
+        JsonReaderState state)
+    {
+        var reader = new Utf8JsonReader(
+            new ReadOnlySpan<byte>(buffer, 0, bytesRead),
+            isFinalBlock,
+            state);
+        while (reader.Read())
+        {
+        }
+
+        return reader.CurrentState;
     }
 
     private static string DecodeUtf8Page(byte[] bytes, int count, bool isFirstPage)
