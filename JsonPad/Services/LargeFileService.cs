@@ -136,7 +136,7 @@ public static class LargeFileService
         return new PagedChunk(text, safeStart, safeStart + totalRead, fileLength);
     }
 
-    public static async Task<ValidationResult> ValidateJsonStreamAsync(
+    public static async Task<JsonValidationResult> ValidateJsonStreamAsync(
         string path,
         IProgress<double>? progress,
         CancellationToken cancellationToken)
@@ -190,13 +190,13 @@ public static class LargeFileService
             }
 
             progress?.Report(1.0);
-            return new ValidationResult(true, "JSON is valid.");
+            return new JsonValidationResult(true, "JSON is valid.");
         }
         catch (JsonException ex)
         {
             var message =
                 $"Invalid JSON at line {ex.LineNumber}, position {ex.BytePositionInLine}: {ex.Message}";
-            return new ValidationResult(false, message);
+            return new JsonValidationResult(false, message);
         }
         catch (OperationCanceledException)
         {
@@ -204,7 +204,7 @@ public static class LargeFileService
         }
         catch (Exception ex)
         {
-            return new ValidationResult(false, $"Validation failed: {ex.Message}");
+            return new JsonValidationResult(false, $"Validation failed: {ex.Message}");
         }
     }
 

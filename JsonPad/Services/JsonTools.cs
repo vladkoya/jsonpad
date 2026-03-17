@@ -3,26 +3,26 @@ using System.Text.Json.Nodes;
 
 namespace JsonPad.Services;
 
-public sealed record ValidationResult(bool IsValid, string Message);
+public sealed record JsonValidationResult(bool IsValid, string Message);
 
 public static class JsonTools
 {
-    public static ValidationResult Validate(string json)
+    public static JsonValidationResult Validate(string json)
     {
         try
         {
             JsonDocument.Parse(json);
-            return new ValidationResult(true, "JSON is valid.");
+            return new JsonValidationResult(true, "JSON is valid.");
         }
         catch (JsonException ex)
         {
             var message =
                 $"Invalid JSON at line {ex.LineNumber}, position {ex.BytePositionInLine}: {ex.Message}";
-            return new ValidationResult(false, message);
+            return new JsonValidationResult(false, message);
         }
         catch (Exception ex)
         {
-            return new ValidationResult(false, $"Validation failed: {ex.Message}");
+            return new JsonValidationResult(false, $"Validation failed: {ex.Message}");
         }
     }
 

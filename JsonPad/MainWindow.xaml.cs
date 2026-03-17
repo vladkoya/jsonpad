@@ -9,7 +9,7 @@ using System.Windows.Threading;
 using JsonPad.Services;
 using JsonPad.Ui;
 using Microsoft.Win32;
-using JsonValidationResult = JsonPad.Services.ValidationResult;
+using JsonValidationResult = JsonPad.Services.JsonValidationResult;
 
 namespace JsonPad;
 
