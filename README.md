@@ -8,6 +8,7 @@ See `CHANGELOG.md` for a Keep a Changelog-style release history (starting at v1.
 
 - Open and save large JSON files asynchronously
 - Open multiple files in a tabbed document view
+- Close active tabs with File -> Close Tab (Ctrl+W), with unsaved-change prompts
 - Stream large-file loading in chunks to keep UI responsive
 - Cancel long read/write operations
 - Large-file mode (disables word wrap for better responsiveness)

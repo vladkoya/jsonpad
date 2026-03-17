@@ -259,9 +259,110 @@ public partial class MainWindow : Window
         await SaveAsAsync();
     }
 
+    private void CloseTab_Click(object sender, RoutedEventArgs e)
+    {
+        CloseActiveTab();
+    }
+
     private void Exit_Click(object sender, RoutedEventArgs e)
     {
         Close();
+    }
+
+    private void CloseActiveTab()
+    {
+        if (_activeDocument is null)
+        {
+            return;
+        }
+
+        _ = CloseSession(_activeDocument);
+    }
+
+    private bool CloseSession(DocumentSession session)
+    {
+        SaveActiveSessionState();
+        if (!ConfirmCloseSession(session))
+        {
+            return false;
+        }
+
+        var wasActive = ReferenceEquals(_activeDocument, session);
+        TabItem? nextTab = null;
+        if (wasActive)
+        {
+            var index = DocumentTabs.Items.IndexOf(session.TabItem);
+            var nextIndex = index < DocumentTabs.Items.Count - 1 ? index + 1 : index - 1;
+            if (nextIndex >= 0 && nextIndex < DocumentTabs.Items.Count && DocumentTabs.Items[nextIndex] is TabItem tab)
+            {
+                nextTab = tab;
+            }
+        }
+
+        _documents.Remove(session.TabItem);
+        DocumentTabs.Items.Remove(session.TabItem);
+
+        if (_documents.Count == 0)
+        {
+            _activeDocument = null;
+            _currentFilePath = null;
+            _isDirty = false;
+            _isLargeFileMode = false;
+            _isUltraLargeMode = false;
+            _lastFindIndex = 0;
+            _lastUltraLargeSearchTerm = null;
+            _ultraLargeSearchNextByte = 0;
+            _ultraLargeSession = null;
+            _lastBackgroundValidationResult = null;
+            CreateAndActivateDocument();
+            return true;
+        }
+
+        if (wasActive)
+        {
+            if (nextTab is not null && _documents.TryGetValue(nextTab, out var nextSession))
+            {
+                DocumentTabs.SelectedItem = nextTab;
+                ActivateDocument(nextSession);
+            }
+            else if (DocumentTabs.Items[0] is TabItem firstTab && _documents.TryGetValue(firstTab, out var firstSession))
+            {
+                DocumentTabs.SelectedItem = firstTab;
+                ActivateDocument(firstSession);
+            }
+        }
+
+        UpdateWindowTitle();
+        return true;
+    }
+
+    private bool ConfirmCloseSession(DocumentSession session)
+    {
+        if (!session.IsDirty)
+        {
+            return true;
+        }
+
+        ActivateDocument(session);
+        var result = MessageBox.Show(
+            this,
+            "You have unsaved changes in this tab. Save now?",
+            "Unsaved changes",
+            MessageBoxButton.YesNoCancel,
+            MessageBoxImage.Warning);
+
+        if (result == MessageBoxResult.Cancel)
+        {
+            return false;
+        }
+
+        if (result == MessageBoxResult.Yes)
+        {
+            var saved = SaveCurrentSynchronously();
+            return saved;
+        }
+
+        return true;
     }
 
     private void Find_Click(object sender, RoutedEventArgs e)
@@ -1162,6 +1263,11 @@ public partial class MainWindow : Window
         else if (Keyboard.Modifiers == ModifierKeys.Control && e.Key == Key.G)
         {
             GoToLine_Click(sender, new RoutedEventArgs());
+            e.Handled = true;
+        }
+        else if (Keyboard.Modifiers == ModifierKeys.Control && e.Key == Key.W)
+        {
+            CloseActiveTab();
             e.Handled = true;
         }
     }
