@@ -6,5 +6,14 @@
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <ApplicationIcon>Assets\JsonPad.ico</ApplicationIcon>
+    <Version>1.2.0</Version>
+    <AssemblyVersion>1.2.0.0</AssemblyVersion>
+    <FileVersion>1.2.0.0</FileVersion>
+    <InformationalVersion>1.2.0</InformationalVersion>
+    <Company>JsonPad</Company>
+    <Product>JsonPad</Product>
+    <Authors>JsonPad Contributors</Authors>
+    <Description>Windows notepad-style editor optimized for very large JSON files.</Description>
   </PropertyGroup>
 </Project>

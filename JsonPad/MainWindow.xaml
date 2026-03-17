@@ -90,6 +90,30 @@
       </Grid>
     </Border>
 
+    <Border Name="UltraLargePanel"
+            DockPanel.Dock="Top"
+            Padding="8"
+            Background="#FFFFF8C5"
+            BorderThickness="0,0,0,1"
+            BorderBrush="#FFE3B341"
+            Visibility="Collapsed">
+      <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+        <TextBlock Name="UltraLargeStatusText"
+                   Text="Ultra-large mode"
+                   VerticalAlignment="Center"
+                   Margin="0,0,12,0" />
+        <Button Name="PrevPageButton"
+                Content="Previous page"
+                Width="110"
+                Margin="0,0,8,0"
+                Click="PrevPage_Click" />
+        <Button Name="NextPageButton"
+                Content="Next page"
+                Width="90"
+                Click="NextPage_Click" />
+      </StackPanel>
+    </Border>
+
     <StatusBar DockPanel.Dock="Bottom">
       <StatusBarItem>
         <TextBlock Name="FilePathStatusText" Text="No file loaded" />
@@ -101,6 +125,14 @@
       <Separator />
       <StatusBarItem>
         <TextBlock Name="LineStatusText" Text="Line: 1, Col: 1" />
+      </StatusBarItem>
+      <Separator />
+      <StatusBarItem>
+        <TextBlock Name="ValidationStatusText" Text="Validation: idle" />
+      </StatusBarItem>
+      <Separator />
+      <StatusBarItem>
+        <TextBlock Name="LoadMetricsStatusText" Text="Load: idle" />
       </StatusBarItem>
     </StatusBar>
 

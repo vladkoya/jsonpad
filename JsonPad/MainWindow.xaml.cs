@@ -1,5 +1,7 @@
 using System.ComponentModel;
+using System.Diagnostics;
 using System.IO;
+using System.Text;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -13,12 +15,39 @@ namespace JsonPad;
 public partial class MainWindow : Window
 {
     private const long LargeFileThresholdBytes = 25L * 1024 * 1024;
+    private const long UltraLargeFileThresholdBytes = 300L * 1024 * 1024;
+    private const int UltraLargePageSizeBytes = 8 * 1024 * 1024;
     private string? _currentFilePath;
     private bool _isDirty;
     private bool _isLargeFileMode;
+    private bool _isUltraLargeMode;
     private bool _suppressTextChanged;
     private CancellationTokenSource? _operationCts;
+    private CancellationTokenSource? _validationCts;
+    private Task? _validationTask;
+    private ValidationResult? _lastBackgroundValidationResult;
+    private Stopwatch? _operationStopwatch;
+    private long _operationTotalBytes;
+    private string _operationName = "Load";
+    private DateTime _lastMetricsUpdateUtc = DateTime.MinValue;
     private int _lastFindIndex;
+    private UltraLargeSession? _ultraLargeSession;
+
+    private sealed class UltraLargeSession
+    {
+        public UltraLargeSession(string path, long fileLength, int pageSizeBytes)
+        {
+            Path = path;
+            FileLength = fileLength;
+            PageSizeBytes = pageSizeBytes;
+        }
+
+        public string Path { get; }
+        public long FileLength { get; }
+        public int PageSizeBytes { get; }
+        public long CurrentStartByte { get; set; }
+        public long CurrentEndByte { get; set; }
+    }
 
     public MainWindow()
     {
@@ -27,6 +56,8 @@ public partial class MainWindow : Window
         UpdateWindowTitle();
         UpdateDocumentStats();
         UpdateCaretStatus();
+        PrevPageButton.IsEnabled = false;
+        NextPageButton.IsEnabled = false;
 
         Editor.SelectionChanged += (_, _) => UpdateCaretStatus();
         PreviewKeyDown += MainWindow_PreviewKeyDown;
@@ -111,6 +142,11 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (Editor.LineCount <= 0)
+        {
+            return;
+        }
+
         if (lineNumber > Editor.LineCount)
         {
             lineNumber = Editor.LineCount;
@@ -126,6 +162,27 @@ public partial class MainWindow : Window
 
     private void ValidateJson_Click(object sender, RoutedEventArgs e)
     {
+        if (_isUltraLargeMode)
+        {
+            if (_validationTask is { IsCompleted: false })
+            {
+                MessageBox.Show(
+                    this,
+                    "Background validation is still running for this ultra-large file.",
+                    "JSON Validation",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+                return;
+            }
+
+            if (_lastBackgroundValidationResult is not null)
+            {
+                var icon = _lastBackgroundValidationResult.IsValid ? MessageBoxImage.Information : MessageBoxImage.Error;
+                MessageBox.Show(this, _lastBackgroundValidationResult.Message, "JSON Validation", MessageBoxButton.OK, icon);
+                return;
+            }
+        }
+
         var result = JsonTools.Validate(Editor.Text);
         var icon = result.IsValid ? MessageBoxImage.Information : MessageBoxImage.Error;
         MessageBox.Show(this, result.Message, "JSON Validation", MessageBoxButton.OK, icon);
@@ -133,6 +190,17 @@ public partial class MainWindow : Window
 
     private void FormatJson_Click(object sender, RoutedEventArgs e)
     {
+        if (_isUltraLargeMode)
+        {
+            MessageBox.Show(
+                this,
+                "Format is unavailable in ultra-large mode. Open a smaller file to format it in-memory.",
+                "Unavailable",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
+
         if (!ConfirmLargeTransformation())
         {
             return;
@@ -150,6 +218,17 @@ public partial class MainWindow : Window
 
     private void MinifyJson_Click(object sender, RoutedEventArgs e)
     {
+        if (_isUltraLargeMode)
+        {
+            MessageBox.Show(
+                this,
+                "Minify is unavailable in ultra-large mode. Open a smaller file to minify it in-memory.",
+                "Unavailable",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
+
         if (!ConfirmLargeTransformation())
         {
             return;
@@ -194,12 +273,14 @@ public partial class MainWindow : Window
         }
 
         _operationCts?.Cancel();
+        _validationCts?.Cancel();
         base.OnClosing(e);
     }
 
     private void CancelButton_Click(object sender, RoutedEventArgs e)
     {
         _operationCts?.Cancel();
+        _validationCts?.Cancel();
     }
 
     private void Editor_TextChanged(object sender, EventArgs e)
@@ -221,19 +302,28 @@ public partial class MainWindow : Window
             BeginOperation();
             var fileInfo = new FileInfo(path);
             _isLargeFileMode = fileInfo.Length >= LargeFileThresholdBytes;
+            _isUltraLargeMode = fileInfo.Length >= UltraLargeFileThresholdBytes;
+            _ultraLargeSession = _isUltraLargeMode
+                ? new UltraLargeSession(path, fileInfo.Length, UltraLargePageSizeBytes)
+                : null;
             _currentFilePath = path;
             FilePathStatusText.Text = path;
             UpdateWindowTitle();
             ApplyEditorMode();
 
-            var progress = new Progress<double>(value => OperationProgressBar.Value = value);
             var cts = CreateOperationCancellationSource();
+            StartBackgroundValidation(path);
+            var progress = CreateOperationProgress(fileInfo.Length, "Load");
             _suppressTextChanged = true;
             Editor.Clear();
 
-            if (_isLargeFileMode)
+            if (_isUltraLargeMode && _ultraLargeSession is not null)
             {
-                var pending = new System.Text.StringBuilder();
+                await LoadUltraLargePageAsync(_ultraLargeSession, 0, progress, cts.Token);
+            }
+            else if (_isLargeFileMode)
+            {
+                var pending = new StringBuilder();
                 const int uiChunkChars = 1024 * 1024;
 
                 await LargeFileService.StreamTextAsync(
@@ -276,8 +366,21 @@ public partial class MainWindow : Window
             UpdateWindowTitle();
             UpdateDocumentStats();
             UpdateCaretStatus();
+            if (_isUltraLargeMode)
+            {
+                LoadMetricsStatusText.Text = "Load: first page ready (paged mode)";
+            }
 
-            if (_isLargeFileMode)
+            if (_isUltraLargeMode)
+            {
+                MessageBox.Show(
+                    this,
+                    "Loaded in ultra-large mode. You can page through the file in read-only mode while background JSON validation continues.",
+                    "Ultra-large mode",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+            }
+            else if (_isLargeFileMode)
             {
                 MessageBox.Show(
                     this,
@@ -332,9 +435,20 @@ public partial class MainWindow : Window
     {
         try
         {
+            if (_isUltraLargeMode)
+            {
+                MessageBox.Show(
+                    this,
+                    "Save is unavailable in ultra-large mode because the editor is paged read-only.",
+                    "Unavailable",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+                return;
+            }
+
             BeginOperation();
-            var progress = new Progress<double>(value => OperationProgressBar.Value = value);
             var cts = CreateOperationCancellationSource();
+            var progress = CreateOperationProgress(Math.Max(1, Editor.Text.Length), "Save");
             await LargeFileService.WriteTextAsync(path, Editor.Text, progress, cts.Token);
 
             _currentFilePath = path;
@@ -397,6 +511,199 @@ public partial class MainWindow : Window
             MessageBox.Show(this, $"Save failed: {ex.Message}", "Save Error", MessageBoxButton.OK, MessageBoxImage.Error);
             return false;
         }
+    }
+
+    private async void PrevPage_Click(object sender, RoutedEventArgs e)
+    {
+        await NavigateUltraLargeAsync(-1);
+    }
+
+    private async void NextPage_Click(object sender, RoutedEventArgs e)
+    {
+        await NavigateUltraLargeAsync(1);
+    }
+
+    private async Task NavigateUltraLargeAsync(int direction)
+    {
+        if (!_isUltraLargeMode || _ultraLargeSession is null)
+        {
+            return;
+        }
+
+        var target = _ultraLargeSession.CurrentStartByte + (long)direction * _ultraLargeSession.PageSizeBytes;
+        target = Math.Clamp(target, 0, Math.Max(0, _ultraLargeSession.FileLength - 1));
+
+        try
+        {
+            BeginOperation();
+            var cts = CreateOperationCancellationSource();
+            var progress = CreateOperationProgress(_ultraLargeSession.FileLength, "Page");
+            await LoadUltraLargePageAsync(_ultraLargeSession, target, progress, cts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            MessageBox.Show(this, "Paging cancelled.", "Cancelled", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"Page load failed: {ex.Message}", "Page Error", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally
+        {
+            EndOperation();
+        }
+    }
+
+    private async Task LoadUltraLargePageAsync(
+        UltraLargeSession session,
+        long startByte,
+        IProgress<double> progress,
+        CancellationToken cancellationToken)
+    {
+        var startRatio = session.FileLength <= 0 ? 0 : (double)startByte / session.FileLength;
+        progress.Report(startRatio);
+        var page = await LargeFileService.ReadPageAsync(
+            session.Path,
+            startByte,
+            session.PageSizeBytes,
+            cancellationToken);
+        var endRatio = page.FileLength <= 0 ? 1 : (double)page.EndByte / page.FileLength;
+        progress.Report(endRatio);
+
+        _suppressTextChanged = true;
+        Editor.Text = page.Text;
+        _suppressTextChanged = false;
+
+        session.CurrentStartByte = page.StartByte;
+        session.CurrentEndByte = page.EndByte;
+        UpdateUltraLargeStatus(session);
+        UpdateDocumentStats();
+        UpdateCaretStatus();
+    }
+
+    private void UpdateUltraLargeStatus(UltraLargeSession session)
+    {
+        var startDisplay = session.CurrentStartByte + 1;
+        var endDisplay = Math.Max(session.CurrentStartByte, session.CurrentEndByte);
+        UltraLargeStatusText.Text =
+            $"Viewing bytes {startDisplay:N0}-{endDisplay:N0} of {session.FileLength:N0} (page size: {session.PageSizeBytes / (1024 * 1024)} MB)";
+        PrevPageButton.IsEnabled = session.CurrentStartByte > 0;
+        NextPageButton.IsEnabled = session.CurrentEndByte < session.FileLength;
+    }
+
+    private void StartBackgroundValidation(string path)
+    {
+        _validationCts?.Cancel();
+        _validationCts?.Dispose();
+        _validationCts = new CancellationTokenSource();
+        var validationToken = _validationCts.Token;
+
+        _lastBackgroundValidationResult = null;
+        ValidationStatusText.Text = "Validation: running...";
+
+        _validationTask = Task.Run(async () =>
+        {
+            try
+            {
+                var result = await LargeFileService.ValidateJsonStreamAsync(path, progress: null, validationToken);
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    if (!string.Equals(_currentFilePath, path, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return;
+                    }
+
+                    _lastBackgroundValidationResult = result;
+                    ValidationStatusText.Text = result.IsValid ? "Validation: valid" : "Validation: invalid";
+                });
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (Exception ex)
+            {
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    ValidationStatusText.Text = $"Validation: error ({ex.Message})";
+                });
+            }
+        }, validationToken);
+    }
+
+    private IProgress<double> CreateOperationProgress(long totalBytes, string operationName)
+    {
+        _operationTotalBytes = Math.Max(1, totalBytes);
+        _operationName = operationName;
+        _operationStopwatch = Stopwatch.StartNew();
+        _lastMetricsUpdateUtc = DateTime.MinValue;
+
+        return new Progress<double>(value =>
+        {
+            OperationProgressBar.Value = value;
+            var now = DateTime.UtcNow;
+            if (value < 1 && (now - _lastMetricsUpdateUtc).TotalMilliseconds < 200)
+            {
+                return;
+            }
+
+            _lastMetricsUpdateUtc = now;
+            if (_operationStopwatch is null)
+            {
+                LoadMetricsStatusText.Text = $"{_operationName}: {value:P0}";
+                return;
+            }
+
+            var elapsedSeconds = Math.Max(0.001, _operationStopwatch.Elapsed.TotalSeconds);
+            var bytesLoaded = _operationTotalBytes * value;
+            var bytesPerSecond = bytesLoaded / elapsedSeconds;
+            var remainingBytes = Math.Max(0, _operationTotalBytes - bytesLoaded);
+            var eta = bytesPerSecond > 1
+                ? TimeSpan.FromSeconds(remainingBytes / bytesPerSecond)
+                : TimeSpan.Zero;
+
+            if (value >= 1)
+            {
+                LoadMetricsStatusText.Text = $"{_operationName}: complete in {FormatDuration(_operationStopwatch.Elapsed)}";
+                return;
+            }
+
+            LoadMetricsStatusText.Text =
+                $"{_operationName}: {value:P0} | {FormatBytes(bytesPerSecond)}/s | ETA {FormatDuration(eta)}";
+        });
+    }
+
+    private static string FormatBytes(double bytes)
+    {
+        const double kb = 1024;
+        const double mb = kb * 1024;
+        const double gb = mb * 1024;
+
+        if (bytes >= gb)
+        {
+            return $"{bytes / gb:0.00} GB";
+        }
+
+        if (bytes >= mb)
+        {
+            return $"{bytes / mb:0.00} MB";
+        }
+
+        if (bytes >= kb)
+        {
+            return $"{bytes / kb:0.00} KB";
+        }
+
+        return $"{bytes:0} B";
+    }
+
+    private static string FormatDuration(TimeSpan duration)
+    {
+        if (duration.TotalHours >= 1)
+        {
+            return duration.ToString(@"hh\:mm\:ss");
+        }
+
+        return duration.ToString(@"mm\:ss");
     }
 
     private void ShowFindPanel()
@@ -529,6 +836,14 @@ public partial class MainWindow : Window
 
     private void ApplyEditorMode()
     {
+        if (_isUltraLargeMode)
+        {
+            ConfigureEditorForUltraLargeMode();
+            UltraLargePanel.Visibility = Visibility.Visible;
+            return;
+        }
+
+        UltraLargePanel.Visibility = Visibility.Collapsed;
         if (_isLargeFileMode)
         {
             ConfigureEditorForLargeMode();
@@ -541,6 +856,7 @@ public partial class MainWindow : Window
 
     private void ConfigureEditorForStandardMode()
     {
+        Editor.IsReadOnly = false;
         Editor.IsUndoEnabled = true;
         Editor.TextWrapping = TextWrapping.Wrap;
         ModeTextBlock.Text = "Mode: Standard";
@@ -548,9 +864,18 @@ public partial class MainWindow : Window
 
     private void ConfigureEditorForLargeMode()
     {
+        Editor.IsReadOnly = false;
         Editor.IsUndoEnabled = false;
         Editor.TextWrapping = TextWrapping.NoWrap;
         ModeTextBlock.Text = "Mode: Large file";
+    }
+
+    private void ConfigureEditorForUltraLargeMode()
+    {
+        Editor.IsReadOnly = true;
+        Editor.IsUndoEnabled = false;
+        Editor.TextWrapping = TextWrapping.NoWrap;
+        ModeTextBlock.Text = "Mode: Ultra-large (paged read-only)";
     }
 
     private CancellationTokenSource CreateOperationCancellationSource()
@@ -572,6 +897,8 @@ public partial class MainWindow : Window
         OperationProgressBar.Visibility = Visibility.Collapsed;
         CancelButton.Visibility = Visibility.Collapsed;
         OperationProgressBar.Value = 0;
+        _operationStopwatch = null;
+        _operationTotalBytes = 0;
 
         _operationCts?.Dispose();
         _operationCts = null;

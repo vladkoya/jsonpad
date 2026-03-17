@@ -1,7 +1,10 @@
 using System.IO;
 using System.Text;
+using System.Text.Json;
 
 namespace JsonPad.Services;
+
+public sealed record PagedChunk(string Text, long StartByte, long EndByte, long FileLength);
 
 public static class LargeFileService
 {
@@ -86,6 +89,144 @@ public static class LargeFileService
         }
 
         progress?.Report(1.0);
+    }
+
+    public static async Task<PagedChunk> ReadPageAsync(
+        string path,
+        long startByte,
+        int pageSizeBytes,
+        CancellationToken cancellationToken)
+    {
+        var info = new FileInfo(path);
+        var fileLength = info.Length;
+        if (fileLength <= 0)
+        {
+            return new PagedChunk(string.Empty, 0, 0, 0);
+        }
+
+        var safeStart = Math.Clamp(startByte, 0, Math.Max(0, fileLength - 1));
+        var toRead = (int)Math.Min(pageSizeBytes, fileLength - safeStart);
+
+        await using var stream = new FileStream(
+            path,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read,
+            BufferSize,
+            useAsync: true);
+
+        stream.Seek(safeStart, SeekOrigin.Begin);
+        var byteBuffer = new byte[toRead];
+        var totalRead = 0;
+        while (totalRead < toRead)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var read = await stream.ReadAsync(
+                byteBuffer.AsMemory(totalRead, toRead - totalRead),
+                cancellationToken).ConfigureAwait(false);
+            if (read == 0)
+            {
+                break;
+            }
+
+            totalRead += read;
+        }
+
+        var text = DecodeUtf8Page(byteBuffer, totalRead, safeStart == 0);
+        return new PagedChunk(text, safeStart, safeStart + totalRead, fileLength);
+    }
+
+    public static async Task<ValidationResult> ValidateJsonStreamAsync(
+        string path,
+        IProgress<double>? progress,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var info = new FileInfo(path);
+            var fileLength = info.Length;
+            var state = new JsonReaderState(new JsonReaderOptions
+            {
+                CommentHandling = JsonCommentHandling.Disallow
+            });
+
+            await using var stream = new FileStream(
+                path,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.Read,
+                BufferSize,
+                useAsync: true);
+
+            var buffer = new byte[BufferSize];
+            while (true)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var read = await stream.ReadAsync(buffer.AsMemory(0, buffer.Length), cancellationToken)
+                    .ConfigureAwait(false);
+                if (read == 0)
+                {
+                    break;
+                }
+
+                var reader = new Utf8JsonReader(
+                    new ReadOnlySpan<byte>(buffer, 0, read),
+                    isFinalBlock: false,
+                    state);
+                while (reader.Read())
+                {
+                }
+
+                state = reader.CurrentState;
+                if (fileLength > 0)
+                {
+                    progress?.Report((double)stream.Position / fileLength);
+                }
+            }
+
+            var finalReader = new Utf8JsonReader(ReadOnlySpan<byte>.Empty, isFinalBlock: true, state);
+            while (finalReader.Read())
+            {
+            }
+
+            progress?.Report(1.0);
+            return new ValidationResult(true, "JSON is valid.");
+        }
+        catch (JsonException ex)
+        {
+            var message =
+                $"Invalid JSON at line {ex.LineNumber}, position {ex.BytePositionInLine}: {ex.Message}";
+            return new ValidationResult(false, message);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            return new ValidationResult(false, $"Validation failed: {ex.Message}");
+        }
+    }
+
+    private static string DecodeUtf8Page(byte[] bytes, int count, bool isFirstPage)
+    {
+        if (count == 0)
+        {
+            return string.Empty;
+        }
+
+        var offset = 0;
+        if (isFirstPage &&
+            count >= 3 &&
+            bytes[0] == 0xEF &&
+            bytes[1] == 0xBB &&
+            bytes[2] == 0xBF)
+        {
+            offset = 3;
+        }
+
+        var length = Math.Max(0, count - offset);
+        return Encoding.UTF8.GetString(bytes, offset, length);
     }
 
     public static async Task WriteTextAsync(

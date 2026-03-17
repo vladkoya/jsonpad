@@ -8,6 +8,9 @@ Windows notepad-style editor for very large JSON files, built with C# and WPF.
 - Stream large-file loading in chunks to keep UI responsive
 - Cancel long read/write operations
 - Large-file mode (disables word wrap for better responsiveness)
+- Ultra-large mode (>= 300 MB) with read-only byte paging
+- Background streaming JSON validation while files are loading
+- Live load progress, throughput, and ETA in the status bar
 - JSON validate / format / minify
 - Find text and go-to-line
 - Status bar for file path, caret position, and content length
@@ -19,6 +22,7 @@ Windows notepad-style editor for very large JSON files, built with C# and WPF.
 - `JsonPad/MainWindow.xaml.cs` - editor and file operations logic
 - `JsonPad/Services/LargeFileService.cs` - buffered async file IO
 - `JsonPad/Services/JsonTools.cs` - JSON validation/format/minify helpers
+- `installer/JsonPad.iss` - Inno Setup one-click installer script
 
 ## Build & run (on Windows)
 
@@ -33,4 +37,25 @@ Windows notepad-style editor for very large JSON files, built with C# and WPF.
 ## Notes
 
 - The app enters **large-file mode** automatically for files >= 25 MB.
+- The app enters **ultra-large mode** automatically for files >= 300 MB.
 - Format/minify for very large files can require significant memory; the app warns before running those operations in large-file mode.
+
+## One-click installer (Inno Setup)
+
+1. Publish app binaries:
+
+   ```bash
+   dotnet publish JsonPad/JsonPad.csproj -c Release -r win-x64 --self-contained true
+   ```
+
+2. Build installer:
+
+   ```bash
+   "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\JsonPad.iss
+   ```
+
+3. Use generated installer:
+
+   - `installer\output\JsonPad-Setup.exe`
+
+`installer/README.md` includes code-signing preparation details.
