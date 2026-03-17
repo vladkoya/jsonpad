@@ -20,6 +20,13 @@
         <MenuItem Header="_Find..." Click="Find_Click" InputGestureText="Ctrl+F" />
         <MenuItem Header="_Go To Line..." Click="GoToLine_Click" InputGestureText="Ctrl+G" />
       </MenuItem>
+      <MenuItem Header="_View">
+        <MenuItem Name="ShowLineNumbersMenuItem"
+                  Header="Show _Line Numbers"
+                  IsCheckable="True"
+                  IsChecked="True"
+                  Click="ShowLineNumbersMenuItem_Click" />
+      </MenuItem>
       <MenuItem Header="_JSON">
         <MenuItem Header="_Validate JSON" Click="ValidateJson_Click" />
         <MenuItem Header="_Format JSON" Click="FormatJson_Click" />

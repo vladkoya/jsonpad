@@ -39,6 +39,7 @@ public partial class MainWindow : Window
     private readonly Dictionary<TabItem, DocumentSession> _documents = new();
     private DocumentSession? _activeDocument;
     private bool _isSwitchingDocument;
+    private bool _showLineNumbers = true;
 
     private TextBox Editor =>
         _activeDocument?.Editor
@@ -49,6 +50,8 @@ public partial class MainWindow : Window
         public required TabItem TabItem { get; init; }
         public required TextBox Editor { get; init; }
         public required TextBlock HeaderTextBlock { get; init; }
+        public required Border LineNumberBorder { get; init; }
+        public required LineNumberGutter LineNumberGutter { get; init; }
         public string? FilePath { get; set; }
         public bool IsDirty { get; set; }
         public bool IsLargeFileMode { get; set; }
@@ -103,9 +106,35 @@ public partial class MainWindow : Window
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto
         };
         textBox.TextChanged += Editor_TextChanged;
-        textBox.SelectionChanged += (_, _) => UpdateCaretStatus();
+        var lineNumberGutter = new LineNumberGutter
+        {
+            TargetTextBox = textBox,
+            Width = 48
+        };
+        var lineNumberBorder = new Border
+        {
+            BorderBrush = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(220, 220, 220)),
+            BorderThickness = new Thickness(0, 0, 1, 0),
+            Background = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(248, 248, 248)),
+            Child = lineNumberGutter,
+            Visibility = _showLineNumbers ? Visibility.Visible : Visibility.Collapsed
+        };
+        textBox.SelectionChanged += (_, _) =>
+        {
+            UpdateCaretStatus();
+            lineNumberGutter.InvalidateVisual();
+        };
+        textBox.LayoutUpdated += (_, _) => lineNumberGutter.InvalidateVisual();
 
-        var tabItem = new TabItem { Content = textBox };
+        var contentGrid = new Grid();
+        contentGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        contentGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        Grid.SetColumn(lineNumberBorder, 0);
+        Grid.SetColumn(textBox, 1);
+        contentGrid.Children.Add(lineNumberBorder);
+        contentGrid.Children.Add(textBox);
+
+        var tabItem = new TabItem { Content = contentGrid };
         var headerText = new TextBlock
         {
             VerticalAlignment = VerticalAlignment.Center
@@ -115,7 +144,9 @@ public partial class MainWindow : Window
         {
             TabItem = tabItem,
             Editor = textBox,
-            HeaderTextBlock = headerText
+            HeaderTextBlock = headerText,
+            LineNumberBorder = lineNumberBorder,
+            LineNumberGutter = lineNumberGutter
         };
         tabItem.Header = CreateClosableTabHeader(session);
 
@@ -123,6 +154,7 @@ public partial class MainWindow : Window
         DocumentTabs.Items.Add(tabItem);
         DocumentTabs.SelectedItem = tabItem;
         session.HeaderTextBlock.Text = string.IsNullOrWhiteSpace(initialHeader) ? "Untitled" : initialHeader;
+        UpdateLineNumberGutterWidth(session);
         ActivateDocument(session);
         return session;
     }
@@ -196,6 +228,7 @@ public partial class MainWindow : Window
             _lastBackgroundValidationResult = session.LastBackgroundValidationResult;
 
             ApplyEditorMode();
+            ApplyLineNumberVisibility(session);
             if (_isUltraLargeMode && _ultraLargeSession is not null)
             {
                 UpdateUltraLargeStatus(_ultraLargeSession);
@@ -219,6 +252,7 @@ public partial class MainWindow : Window
                 { IsValid: true } => "Validation: valid",
                 _ => "Validation: invalid"
             };
+            ShowLineNumbersMenuItem.IsChecked = _showLineNumbers;
         }
         finally
         {
@@ -251,6 +285,31 @@ public partial class MainWindow : Window
             ? "Untitled"
             : Path.GetFileName(session.FilePath);
         session.HeaderTextBlock.Text = $"{(session.IsDirty ? "*" : string.Empty)}{baseName}";
+    }
+
+    private void ShowLineNumbersMenuItem_Click(object sender, RoutedEventArgs e)
+    {
+        _showLineNumbers = ShowLineNumbersMenuItem.IsChecked;
+        foreach (var session in _documents.Values)
+        {
+            ApplyLineNumberVisibility(session);
+        }
+    }
+
+    private void ApplyLineNumberVisibility(DocumentSession session)
+    {
+        session.LineNumberBorder.Visibility = _showLineNumbers ? Visibility.Visible : Visibility.Collapsed;
+        if (_showLineNumbers)
+        {
+            UpdateLineNumberGutterWidth(session);
+        }
+    }
+
+    private static void UpdateLineNumberGutterWidth(DocumentSession session)
+    {
+        var digits = Math.Max(1, session.Editor.LineCount).ToString().Length;
+        var width = Math.Clamp(18 + (digits * 8), 36, 96);
+        session.LineNumberGutter.Width = width;
     }
 
     private async void Open_Click(object sender, RoutedEventArgs e)
@@ -715,6 +774,12 @@ public partial class MainWindow : Window
 
     private void Editor_TextChanged(object sender, EventArgs e)
     {
+        if (_activeDocument is not null)
+        {
+            UpdateLineNumberGutterWidth(_activeDocument);
+            _activeDocument.LineNumberGutter.InvalidateVisual();
+        }
+
         if (_suppressTextChanged)
         {
             return;
@@ -1541,6 +1606,11 @@ public partial class MainWindow : Window
     private void UpdateDocumentStats()
     {
         LengthStatusText.Text = $"Length: {Editor.Text.Length:N0}";
+        if (_activeDocument is not null)
+        {
+            UpdateLineNumberGutterWidth(_activeDocument);
+            _activeDocument.LineNumberGutter.InvalidateVisual();
+        }
     }
 
     private void UpdateCaretStatus()

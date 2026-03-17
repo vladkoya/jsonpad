@@ -16,6 +16,7 @@ See `CHANGELOG.md` for a Keep a Changelog-style release history (starting at v1.
 - Ultra-large files prompt for open mode: paged (recommended) or full-load (experimental)
 - Ultra-large mode supports search across the entire file (with wrap-around)
 - Find now shows search progress/status and keeps found text highlighted
+- Optional line-number gutter with View -> Show Line Numbers toggle
 - Background streaming JSON validation while files are loading
 - Live load progress, throughput, and ETA in the status bar
 - JSON validate / format / minify
